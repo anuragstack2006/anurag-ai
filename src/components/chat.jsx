@@ -134,7 +134,7 @@ function Chat() {
     abortControllerRef.current = new AbortController();
 
     const response = await fetch(
-      "http://localhost:5000/chat",
+      "https://anurag-ai.onrender.com/chat",
       {
         method: "POST",
         headers: {
