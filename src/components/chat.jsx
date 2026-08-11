@@ -4,25 +4,42 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-const DEFAULT_MESSAGE = {
-  text: "👋 Hello Anurag! How can I help you?",
-  sender: "bot",
-  time: new Date().toLocaleTimeString([], {
+const getTime = () =>
+  new Date().toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
-  }),
-};
+  });
+
+const createWelcomeMessage = () => ({
+  text: "✨ Welcome! I'm ready when you are. What would you like to explore?",
+  sender: "bot",
+  time: getTime(),
+});
 
 function Chat() {
   const [typing, setTyping] = useState(false);
   const [message, setMessage] = useState("");
+
   const [theme, setTheme] = useState(
     localStorage.getItem("theme") || "dark"
   );
+
   const [search, setSearch] = useState("");
   const [currentChatId, setCurrentChatId] = useState(null);
   const [editingIndex, setEditingIndex] = useState(null);
 
+  // Mobile sidebar
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Voice
+  const [isListening, setIsListening] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+
+  const [voiceEnabled, setVoiceEnabled] = useState(
+    localStorage.getItem("voiceEnabled") !== "false"
+  );
+
+  // Messages
   const [messages, setMessages] = useState(() => {
     try {
       const saved = localStorage.getItem("currentMessages");
@@ -38,9 +55,10 @@ function Chat() {
       console.error("Messages load error:", error);
     }
 
-    return [DEFAULT_MESSAGE];
+    return [createWelcomeMessage()];
   });
 
+  // Chat history
   const [chatHistory, setChatHistory] = useState(() => {
     try {
       const saved = localStorage.getItem("chatHistory");
@@ -62,16 +80,17 @@ function Chat() {
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const recognitionRef = useRef(null);
 
-  // -----------------------------
-  // Save data
-  // -----------------------------
+  // Used so voice can automatically send the final transcript
+  const voiceTranscriptRef = useRef("");
+
+  // --------------------------------------------------
+  // SAVE
+  // --------------------------------------------------
 
   useEffect(() => {
-    localStorage.setItem(
-      "chatHistory",
-      JSON.stringify(chatHistory)
-    );
+    localStorage.setItem("chatHistory", JSON.stringify(chatHistory));
   }, [chatHistory]);
 
   useEffect(() => {
@@ -86,9 +105,13 @@ function Chat() {
     document.body.className = theme;
   }, [theme]);
 
-  // -----------------------------
-  // Auto scroll
-  // -----------------------------
+  useEffect(() => {
+    localStorage.setItem("voiceEnabled", voiceEnabled);
+  }, [voiceEnabled]);
+
+  // --------------------------------------------------
+  // AUTO SCROLL
+  // --------------------------------------------------
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
@@ -96,20 +119,11 @@ function Chat() {
     });
   }, [messages, typing]);
 
-  // -----------------------------
-  // Helpers
-  // -----------------------------
+  // --------------------------------------------------
+  // HELPERS
+  // --------------------------------------------------
 
-  const getTime = () =>
-    new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-
-  const createDefaultMessage = () => ({
-    ...DEFAULT_MESSAGE,
-    time: getTime(),
-  });
+  const createNewWelcome = () => createWelcomeMessage();
 
   const saveCurrentChat = (updatedMessages) => {
     if (!currentChatId) return;
@@ -126,12 +140,189 @@ function Chat() {
     );
   };
 
-  // -----------------------------
-  // Send message
-  // -----------------------------
+  // --------------------------------------------------
+  // TEXT TO SPEECH
+  // --------------------------------------------------
+
+  const stopSpeaking = () => {
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+
+    setSpeaking(false);
+  };
+
+  const speakReply = (text) => {
+    if (!voiceEnabled) return;
+
+    if (!("speechSynthesis" in window)) return;
+
+    stopSpeaking();
+
+    const cleanText = text
+      .replace(/```[\s\S]*?```/g, " Code omitted. ")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/[*_~`#]/g, "")
+      .replace(/\n+/g, ". ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!cleanText) return;
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+
+    utterance.lang = "en-IN";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+
+    utterance.onstart = () => {
+      setSpeaking(true);
+    };
+
+    utterance.onend = () => {
+      setSpeaking(false);
+    };
+
+    utterance.onerror = () => {
+      setSpeaking(false);
+    };
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // --------------------------------------------------
+  // SPEECH RECOGNITION
+  // --------------------------------------------------
+
+  const startListening = () => {
+    if (typing) return;
+
+    const SpeechRecognition =
+      window.SpeechRecognition ||
+      window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert(
+        "Voice input is not supported in this browser. Please use Google Chrome or Microsoft Edge."
+      );
+      return;
+    }
+
+    stopSpeaking();
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // Ignore
+      }
+    }
+
+    voiceTranscriptRef.current = "";
+
+    const recognition = new SpeechRecognition();
+
+    recognition.lang = "en-IN";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
+
+    recognition.onresult = (event) => {
+      let finalTranscript = "";
+      let interimTranscript = "";
+
+      for (
+        let i = event.resultIndex;
+        i < event.results.length;
+        i++
+      ) {
+        const transcript =
+          event.results[i][0].transcript;
+
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      const combined =
+        finalTranscript || interimTranscript;
+
+      if (combined) {
+        voiceTranscriptRef.current = combined;
+        setMessage(combined);
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.error(
+        "Speech recognition error:",
+        event.error
+      );
+
+      setIsListening(false);
+
+      if (event.error === "not-allowed") {
+        alert(
+          "Microphone permission denied. Please allow microphone access in your browser."
+        );
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+
+      const finalVoiceText =
+        voiceTranscriptRef.current.trim();
+
+      /*
+        IMPORTANT:
+        Automatically send after voice recognition ends.
+      */
+      if (finalVoiceText && !typing) {
+        voiceTranscriptRef.current = "";
+
+        setTimeout(() => {
+          handleSend(finalVoiceText);
+        }, 120);
+      }
+    };
+
+    recognitionRef.current = recognition;
+
+    try {
+      recognition.start();
+    } catch (error) {
+      console.error("Voice start error:", error);
+      setIsListening(false);
+    }
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // Ignore
+      }
+    }
+
+    setIsListening(false);
+  };
+
+  // --------------------------------------------------
+  // SEND TO BACKEND
+  // --------------------------------------------------
 
   const sendToAI = async (conversation) => {
-    abortControllerRef.current = new AbortController();
+    abortControllerRef.current =
+      new AbortController();
 
     const response = await fetch(
       "https://anurag-ai.onrender.com/chat",
@@ -148,7 +339,9 @@ function Chat() {
     );
 
     if (!response.ok) {
-      throw new Error(`Server error: ${response.status}`);
+      throw new Error(
+        `Server error: ${response.status}`
+      );
     }
 
     const data = await response.json();
@@ -160,10 +353,18 @@ function Chat() {
     return data.reply;
   };
 
-  const handleSend = async () => {
-    if (!message.trim() || typing) return;
+  // --------------------------------------------------
+  // SEND MESSAGE
+  // --------------------------------------------------
 
-    const text = message.trim();
+  const handleSend = async (forcedText = null) => {
+    const text = (
+      forcedText !== null ? forcedText : message
+    ).trim();
+
+    if (!text || typing) return;
+
+    stopListening();
 
     const userMessage = {
       text,
@@ -202,7 +403,9 @@ function Chat() {
 
       setMessages(finalMessages);
 
-      // First message = create new chat
+      // Speak automatically if Voice is enabled
+      speakReply(reply);
+
       if (!currentChatId) {
         const newId = Date.now();
 
@@ -212,8 +415,8 @@ function Chat() {
           {
             id: newId,
             title:
-              text.length > 35
-                ? `${text.substring(0, 35)}...`
+              text.length > 42
+                ? `${text.substring(0, 42)}...`
                 : text,
             messages: finalMessages,
           },
@@ -224,14 +427,14 @@ function Chat() {
       }
     } catch (error) {
       if (error.name === "AbortError") {
-        console.log("Generation stopped.");
         return;
       }
 
       console.error("CHAT ERROR:", error);
 
       const errorMessage = {
-        text: "❌ Unable to connect to AI. Please check whether the server is running.",
+        text:
+          "⚠️ I couldn't connect to the AI server right now. Please try again in a moment.",
         sender: "bot",
         time: getTime(),
       };
@@ -252,40 +455,46 @@ function Chat() {
     }
   };
 
-  // -----------------------------
-  // Stop generating
-  // -----------------------------
+  // --------------------------------------------------
+  // STOP
+  // --------------------------------------------------
 
   const stopGenerating = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
 
+    stopListening();
+    stopSpeaking();
+
     setTyping(false);
   };
 
-  // -----------------------------
-  // New Chat
-  // -----------------------------
+  // --------------------------------------------------
+  // NEW CHAT
+  // --------------------------------------------------
 
   const newChat = () => {
     stopGenerating();
 
     setCurrentChatId(null);
-    setMessages([createDefaultMessage()]);
+    setMessages([createNewWelcome()]);
     setMessage("");
     setEditingIndex(null);
 
     localStorage.removeItem("currentMessages");
 
+    // Close mobile sidebar
+    setSidebarOpen(false);
+
     setTimeout(() => {
       inputRef.current?.focus();
-    }, 100);
+    }, 150);
   };
 
-  // -----------------------------
-  // Open old chat
-  // -----------------------------
+  // --------------------------------------------------
+  // OPEN CHAT
+  // --------------------------------------------------
 
   const openChat = (chat) => {
     if (!chat || !Array.isArray(chat.messages)) {
@@ -303,11 +512,14 @@ function Chat() {
       "currentMessages",
       JSON.stringify(chat.messages)
     );
+
+    // Close mobile sidebar after selection
+    setSidebarOpen(false);
   };
 
-  // -----------------------------
-  // Delete chat
-  // -----------------------------
+  // --------------------------------------------------
+  // DELETE CHAT
+  // --------------------------------------------------
 
   const deleteChat = (id) => {
     setChatHistory((prev) =>
@@ -315,18 +527,29 @@ function Chat() {
     );
 
     if (id === currentChatId) {
-      newChat();
+      stopGenerating();
+
+      setCurrentChatId(null);
+      setMessages([createNewWelcome()]);
+      setMessage("");
+      setEditingIndex(null);
+
+      localStorage.removeItem("currentMessages");
     }
   };
 
-  // -----------------------------
-  // Clear current chat
-  // -----------------------------
+  // --------------------------------------------------
+  // CLEAR
+  // --------------------------------------------------
 
   const clearChat = () => {
-    const defaultMessage = [createDefaultMessage()];
+    stopSpeaking();
 
-    setMessages(defaultMessage);
+    const defaultMessages = [
+      createNewWelcome(),
+    ];
+
+    setMessages(defaultMessages);
     setMessage("");
     setEditingIndex(null);
 
@@ -336,7 +559,7 @@ function Chat() {
           chat.id === currentChatId
             ? {
                 ...chat,
-                messages: defaultMessage,
+                messages: defaultMessages,
               }
             : chat
         )
@@ -345,26 +568,25 @@ function Chat() {
 
     localStorage.setItem(
       "currentMessages",
-      JSON.stringify(defaultMessage)
+      JSON.stringify(defaultMessages)
     );
   };
 
-  // -----------------------------
-  // Copy message
-  // -----------------------------
+  // --------------------------------------------------
+  // COPY
+  // --------------------------------------------------
 
   const copyMessage = async (text) => {
     try {
       await navigator.clipboard.writeText(text);
-      alert("Copied!");
     } catch (error) {
       console.error("Copy failed:", error);
     }
   };
 
-  // -----------------------------
-  // Edit user message
-  // -----------------------------
+  // --------------------------------------------------
+  // EDIT
+  // --------------------------------------------------
 
   const editMessage = (index) => {
     const msg = messages[index];
@@ -379,9 +601,9 @@ function Chat() {
     }, 100);
   };
 
-  // -----------------------------
-  // Regenerate AI response
-  // -----------------------------
+  // --------------------------------------------------
+  // REGENERATE
+  // --------------------------------------------------
 
   const regenerateResponse = async () => {
     if (typing) return;
@@ -393,13 +615,16 @@ function Chat() {
       return;
     }
 
+    stopSpeaking();
+
     const withoutLastBot = messages.slice(0, -1);
 
     setMessages(withoutLastBot);
     setTyping(true);
 
     try {
-      const reply = await sendToAI(withoutLastBot);
+      const reply =
+        await sendToAI(withoutLastBot);
 
       const botMessage = {
         text: reply,
@@ -414,12 +639,17 @@ function Chat() {
 
       setMessages(finalMessages);
 
+      speakReply(reply);
+
       if (currentChatId) {
         saveCurrentChat(finalMessages);
       }
     } catch (error) {
       if (error.name !== "AbortError") {
-        console.error("Regenerate error:", error);
+        console.error(
+          "Regenerate error:",
+          error
+        );
       }
     } finally {
       setTyping(false);
@@ -427,9 +657,9 @@ function Chat() {
     }
   };
 
-  // -----------------------------
-  // Export chat
-  // -----------------------------
+  // --------------------------------------------------
+  // EXPORT
+  // --------------------------------------------------
 
   const exportChat = () => {
     if (!messages.length) return;
@@ -438,12 +668,16 @@ function Chat() {
       .map((msg) => {
         const sender =
           msg.sender === "user"
-            ? "Anurag"
-            : "Anurag's AI";
+            ? "You"
+            : "🧠Anurag AI";
 
-        return `${sender} [${msg.time || ""}]\n${msg.text}\n`;
+        return `${sender} [${
+          msg.time || ""
+        }]\n${msg.text}\n`;
       })
-      .join("\n--------------------\n\n");
+      .join(
+        "\n------------------------------\n\n"
+      );
 
     const blob = new Blob([text], {
       type: "text/plain",
@@ -454,77 +688,137 @@ function Chat() {
     const a = document.createElement("a");
 
     a.href = url;
-    a.download = "anurag-ai-chat.txt";
+    a.download = "ai-chat.txt";
 
+    document.body.appendChild(a);
     a.click();
+    a.remove();
 
     URL.revokeObjectURL(url);
   };
 
-  // -----------------------------
-  // Search
-  // -----------------------------
+  // --------------------------------------------------
+  // SEARCH
+  // --------------------------------------------------
 
-  const filteredChats = chatHistory.filter((chat) =>
-    chat.title
-      ?.toLowerCase()
-      .includes(search.toLowerCase())
+  const filteredChats = chatHistory.filter(
+    (chat) =>
+      chat.title
+        ?.toLowerCase()
+        .includes(search.toLowerCase())
   );
 
-  // -----------------------------
-  // Keyboard shortcut
-  // -----------------------------
+  // --------------------------------------------------
+  // KEYBOARD
+  // --------------------------------------------------
 
   const handleKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (
+      e.key === "Enter" &&
+      !e.shiftKey
+    ) {
       e.preventDefault();
-      handleSend();
+
+      if (!typing && message.trim()) {
+        handleSend();
+      }
     }
   };
 
-  return (
-    <div className={`app-layout ${theme}`}>
+  // --------------------------------------------------
+  // RENDER
+  // --------------------------------------------------
 
-      {/* SIDEBAR */}
+  return (
+    <div
+      className={`app-layout ${theme} ${
+        sidebarOpen ? "sidebar-open" : ""
+      }`}
+    >
+      {/* MOBILE OVERLAY */}
+
+      {sidebarOpen && (
+        <div
+          className="mobile-overlay"
+          onClick={() =>
+            setSidebarOpen(false)
+          }
+        />
+      )}
+
+      {/* ================= SIDEBAR ================= */}
 
       <aside className="sidebar">
-
         <div className="sidebar-top">
-
           <div className="brand">
-            <div className="brand-icon">🧠</div>
-
-            <div>
-              <h2>Anurag's AI</h2>
-              <span>Personal AI Assistant</span>
+            <div className="brand-icon">
+              <span>✦</span>
             </div>
+
+            <div className="brand-text">
+              <h2>Anurag AI</h2>
+              <span>Smart • Fast • Personal</span>
+            </div>
+
+            <button
+              className="mobile-close"
+              onClick={() =>
+                setSidebarOpen(false)
+              }
+              aria-label="Close sidebar"
+            >
+              ×
+            </button>
           </div>
 
           <button
             className="new-chat-btn"
             onClick={newChat}
           >
-            ＋ New Chat
+            <span className="new-chat-icon">
+              ＋
+            </span>
+            <span>New Chat</span>
           </button>
 
-          <input
-            className="chat-search"
-            type="text"
-            placeholder="🔍 Search chats..."
-            value={search}
-            onChange={(e) =>
-              setSearch(e.target.value)
-            }
-          />
+          <div className="search-wrapper">
+            <span>⌕</span>
 
-          <h3>Recent Chats</h3>
+            <input
+              className="chat-search"
+              type="text"
+              placeholder="Search conversations..."
+              value={search}
+              onChange={(e) =>
+                setSearch(e.target.value)
+              }
+            />
+          </div>
+
+          <div className="history-heading">
+            <span>RECENT CHATS</span>
+
+            {chatHistory.length > 0 && (
+              <span className="history-count">
+                {chatHistory.length}
+              </span>
+            )}
+          </div>
 
           <div className="history-list">
-
             {filteredChats.length === 0 ? (
               <div className="empty-history">
-                <span>💬</span>
-                <p>No conversations yet</p>
+                <div className="empty-icon">
+                  ✦
+                </div>
+
+                <strong>
+                  No conversations yet
+                </strong>
+
+                <p>
+                  Start a new chat to see it here.
+                </p>
               </div>
             ) : (
               filteredChats.map((chat) => (
@@ -535,15 +829,27 @@ function Chat() {
                       : ""
                   }`}
                   key={chat.id}
-                  onClick={() => openChat(chat)}
+                  onClick={() =>
+                    openChat(chat)
+                  }
                 >
-                  <span className="chat-title">
-                    💬 {chat.title}
-                  </span>
+                  <div className="chat-item-icon">
+                    💬
+                  </div>
+
+                  <div className="chat-item-info">
+                    <span className="chat-title">
+                      {chat.title}
+                    </span>
+
+                    <span className="chat-subtitle">
+                      Conversation
+                    </span>
+                  </div>
 
                   <button
                     className="delete-chat"
-                    title="Delete chat"
+                    title="Delete conversation"
                     onClick={(e) => {
                       e.stopPropagation();
                       deleteChat(chat.id);
@@ -554,12 +860,10 @@ function Chat() {
                 </div>
               ))
             )}
-
           </div>
         </div>
 
         <div className="sidebar-bottom">
-
           <button
             className="side-action"
             onClick={() =>
@@ -570,52 +874,114 @@ function Chat() {
               )
             }
           >
+            <span>
+              {theme === "dark"
+                ? "☀️"
+                : "🌙"}
+            </span>
+
             {theme === "dark"
-              ? "☀️ Light Mode"
-              : "🌙 Dark Mode"}
+              ? "Light Mode"
+              : "Dark Mode"}
+          </button>
+
+          <button
+            className="side-action"
+            onClick={() => {
+              setVoiceEnabled((prev) => {
+                const next = !prev;
+
+                if (!next) {
+                  stopSpeaking();
+                }
+
+                return next;
+              });
+            }}
+          >
+            <span>
+              {voiceEnabled
+                ? "🔊"
+                : "🔇"}
+            </span>
+
+            {voiceEnabled
+              ? "Voice On"
+              : "Voice Off"}
           </button>
 
           <button
             className="side-action"
             onClick={exportChat}
           >
-            📥 Export Chat
+            <span>📥</span>
+            Export Chat
           </button>
 
+          <div className="sidebar-footer">
+            <span className="footer-dot" />
+            AI system ready
+          </div>
         </div>
-
       </aside>
 
-
-      {/* MAIN CHAT */}
+      {/* ================= MAIN ================= */}
 
       <main className="chat-container">
-
         {/* HEADER */}
 
         <header className="chat-header">
+          <div className="header-left">
+            <button
+              className="menu-btn"
+              onClick={() =>
+                setSidebarOpen(true)
+              }
+              aria-label="Open chats"
+            >
+              ☰
+            </button>
 
-          <div>
-            <h1>🧠 Anurag's AI</h1>
-            <p>
-              Your Personal AI Assistant
-            </p>
+            <div className="header-brand">
+              <div className="header-logo">
+                ✦
+              </div>
+
+              <div>
+                <h1>🧠Anurag AI</h1>
+
+                <p>
+                  Your intelligent conversation
+                  partner
+                </p>
+              </div>
+            </div>
           </div>
 
-          <div className="online-status">
-            <span></span>
-            AI Online
-          </div>
+          <div className="header-actions">
+            {speaking && (
+              <button
+                className="stop-speaking-btn"
+                onClick={stopSpeaking}
+              >
+                <span>🔇</span>
+                <span className="stop-voice-text">
+                  Stop Voice
+                </span>
+              </button>
+            )}
 
+            <div className="online-status">
+              <span />
+              <label>Online</label>
+            </div>
+          </div>
         </header>
-
 
         {/* MESSAGES */}
 
         <section className="messages">
-
           {messages.map((msg, index) => (
-
             <div
               key={`${index}-${msg.time || ""}`}
               className={`message-row ${
@@ -624,7 +990,6 @@ function Chat() {
                   : "bot-row"
               }`}
             >
-
               <div
                 className={
                   msg.sender === "user"
@@ -632,23 +997,25 @@ function Chat() {
                     : "bot-message"
                 }
               >
-
                 <div className="message-top">
+                  <div className="sender-avatar">
+                    {msg.sender === "user"
+                      ? "U"
+                      : "✦"}
+                  </div>
 
                   <span className="sender-name">
                     {msg.sender === "user"
                       ? "You"
-                      : "🧠 Anurag's AI"}
+                      : "Anurag AI"}
                   </span>
 
                   <span className="message-time">
                     {msg.time}
                   </span>
-
                 </div>
 
                 <div className="message-content">
-
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
@@ -665,18 +1032,24 @@ function Chat() {
                         return match ? (
                           <SyntaxHighlighter
                             style={oneDark}
-                            language={match[1]}
+                            language={
+                              match[1]
+                            }
                             PreTag="div"
                             {...props}
                           >
-                            {String(children).replace(
+                            {String(
+                              children
+                            ).replace(
                               /\n$/,
                               ""
                             )}
                           </SyntaxHighlighter>
                         ) : (
                           <code
-                            className={className}
+                            className={
+                              className
+                            }
                             {...props}
                           >
                             {children}
@@ -687,17 +1060,16 @@ function Chat() {
                   >
                     {msg.text}
                   </ReactMarkdown>
-
                 </div>
 
-
-                {/* MESSAGE ACTIONS */}
+                {/* ACTIONS */}
 
                 <div className="message-actions">
-
                   <button
                     onClick={() =>
-                      copyMessage(msg.text)
+                      copyMessage(
+                        msg.text
+                      )
                     }
                     title="Copy"
                   >
@@ -729,52 +1101,63 @@ function Chat() {
                       </button>
                     )}
 
+                  {msg.sender === "bot" && (
+                    <button
+                      onClick={() =>
+                        speaking
+                          ? stopSpeaking()
+                          : speakReply(
+                              msg.text
+                            )
+                      }
+                      title="Read aloud"
+                    >
+                      {speaking
+                        ? "🔇"
+                        : "🔊"}
+                    </button>
+                  )}
                 </div>
-
               </div>
-
             </div>
-
           ))}
-
 
           {/* TYPING */}
 
           {typing && (
             <div className="message-row bot-row">
-
               <div className="bot-message typing-box">
-
-                <span className="typing-label">
-                  Anurag's AI is thinking
-                </span>
-
-                <div className="typing-dots">
-                  <span></span>
-                  <span></span>
-                  <span></span>
+                <div className="typing-avatar">
+                  ✦
                 </div>
 
-              </div>
+                <div className="typing-content">
+                  <span className="typing-label">
+                    AI is thinking
+                  </span>
 
+                  <div className="typing-dots">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
-          <div ref={messagesEndRef}></div>
-
+          <div ref={messagesEndRef} />
         </section>
 
-
-        {/* INPUT */}
+        {/* COMPOSER */}
 
         <section className="composer">
-
           {editingIndex !== null && (
             <div className="editing-bar">
-
-              <span>
-                ✏️ Editing message
-              </span>
+              <div>
+                <span>✏️</span>
+                Editing message
+              </div>
 
               <button
                 onClick={() => {
@@ -784,12 +1167,10 @@ function Chat() {
               >
                 Cancel
               </button>
-
             </div>
           )}
 
           <div className="input-area">
-
             <input
               ref={inputRef}
               id="chat-message"
@@ -797,9 +1178,11 @@ function Chat() {
               type="text"
               maxLength={4000}
               placeholder={
-                editingIndex !== null
+                isListening
+                  ? "Listening... speak now"
+                  : editingIndex !== null
                   ? "Edit your message..."
-                  : "Message Anurag's AI..."
+                  : "Message AI Assistant..."
               }
               value={message}
               onChange={(e) =>
@@ -807,39 +1190,85 @@ function Chat() {
               }
               onKeyDown={handleKeyDown}
               disabled={typing}
+              autoComplete="off"
             />
 
             <span className="character-count">
               {message.length}/4000
             </span>
 
+            {/* VOICE */}
+
+            <button
+              className={`voice-btn ${
+                isListening
+                  ? "listening"
+                  : ""
+              }`}
+              onClick={
+                isListening
+                  ? stopListening
+                  : startListening
+              }
+              disabled={typing}
+              title={
+                isListening
+                  ? "Stop listening"
+                  : "Voice input"
+              }
+            >
+              {isListening
+                ? "⏹"
+                : "🎙️"}
+            </button>
+
+            {/* SEND */}
+
             {typing ? (
               <button
                 className="stop-btn"
                 onClick={stopGenerating}
               >
-                ⏹ Stop
+                <span>■</span>
+                <span>Stop</span>
               </button>
             ) : (
               <button
                 className="send-btn"
-                onClick={handleSend}
+                onClick={() =>
+                  handleSend()
+                }
                 disabled={!message.trim()}
+                title="Send message"
               >
-                {editingIndex !== null
-                  ? "↗ Update"
-                  : "➤ Send"}
+                <span>
+                  {editingIndex !== null
+                    ? "↗"
+                    : "➤"}
+                </span>
+
+                <span className="send-text">
+                  {editingIndex !== null
+                    ? "Update"
+                    : "Send"}
+                </span>
               </button>
             )}
-
           </div>
 
           <div className="composer-footer">
-
             <span>
-              Anurag's AI can make mistakes. Verify
-              important information.
+              {isListening
+                ? "🎙️ Listening..."
+                : voiceEnabled
+                ? "🎙️ Voice mode enabled • AI can speak replies"
+                : "Anurag AI may make mistakes. Verify important information."}
             </span>
+
+            <div className="footer-brand">
+              Developed with ❤️ by <strong>Anurag</strong>
+            </div>
+            
 
             <button
               className="clear-btn"
@@ -847,13 +1276,9 @@ function Chat() {
             >
               🗑 Clear
             </button>
-
           </div>
-
         </section>
-
       </main>
-
     </div>
   );
 }
