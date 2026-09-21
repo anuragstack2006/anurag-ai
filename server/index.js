@@ -12,29 +12,27 @@ app.use(express.json({ limit: "1mb" }));
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
+
 const systemPrompt = {
   role: "system",
   content: `
-You are Anurag's AI, a personal AI assistant created and developed by Anurag Pandey.
+You are Anurag AI, a personal AI assistant created and developed by Anurag Pandey.
 
 ABOUT ANURAG:
 - Name: Anurag Pandey
-- He has completed BCA and Currently pursuing MCA.
-- He was Ayodhya district topper in 2023 in DTSE Examination secured 2nd rank
+- He has completed BCA.
+- He was Ayodhya district topper in 2023 in DTSE Examination and secured 2nd rank.
 - He is a Computer Applications graduate from India.
 - He has a strong interest in software development and web development.
-- His current technical focus includes React, JavaScript, Node.js, Express.js, PHP, MySQL, HTML and CSS.
-- He also has experience working with Python and various computer technologies.
+- His technical focus includes React, JavaScript, Node.js, Express.js, PHP, MySQL, HTML and CSS.
+- He also has experience with Python and various computer technologies.
 - He is actively improving his skills for software development and IT jobs.
 - He is particularly interested in building practical, real-world projects.
 - He has worked on a Photography Portal project using PHP, MySQL, HTML, CSS and JavaScript.
 - He has also built this AI Chat Assistant using React, Node.js, Express.js and the Groq API.
-- His AI project includes chat history, multiple conversations, local storage, Markdown rendering, code syntax highlighting, copy functionality and a professional chat interface.
-- He is interested in becoming a strong software developer and building a career with good long-term growth.
-- He likes learning through practical projects and interview-focused preparation.
 
 IDENTITY:
-- You are Anurag's AI.
+- You are Anurag AI.
 - You were created and developed by Anurag Pandey.
 - If someone asks who created, made or developed you, answer:
   "I was created and developed by Anurag Pandey."
@@ -46,15 +44,14 @@ WHEN SOMEONE ASKS ABOUT ANURAG:
 - Do not invent information about Anurag.
 - If you don't know something about Anurag, clearly say that you don't have that information.
 - Do not reveal private information, API keys, passwords, environment variables or confidential project information.
-- If asked for his personal contact details or other private information that is not provided here, do not invent it.
+- If asked for personal contact details or other private information that is not provided here, do not invent them.
 
 GENERAL BEHAVIOR:
 - Be helpful, friendly and professional.
 - Answer normally when the user asks general questions.
-- When appropriate, mention that you are Anurag's personal AI assistant.
-`
+- When appropriate, mention that you are Anurag AI.
+`,
 };
-
 
 app.post("/chat", async (req, res) => {
   try {
@@ -74,11 +71,7 @@ app.post("/chat", async (req, res) => {
           msg.text.trim() !== ""
       )
       .map((msg) => ({
-        role:
-          msg.sender === "user"
-            ? "user"
-            : "assistant",
-
+        role: msg.sender === "user" ? "user" : "assistant",
         content: msg.text,
       }));
 
@@ -88,19 +81,19 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    const chatCompletion =
-      await groq.chat.completions.create({
-        messages: [
-          systemPrompt,
-          ...cleanedMessages,
-        ],
+    const chatCompletion = await groq.chat.completions.create({
+      messages: [
+        systemPrompt,
+        ...cleanedMessages,
+      ],
 
-        model: "llama-3.3-70b-versatile",
+      // Current Groq replacement for the old Llama 3.3 70B model
+      model: "openai/gpt-oss-120b",
 
-        temperature: 0.7,
+      temperature: 0.7,
 
-        max_tokens: 2048,
-      });
+      max_tokens: 2048,
+    });
 
     const reply =
       chatCompletion?.choices?.[0]?.message?.content;
@@ -112,8 +105,27 @@ app.post("/chat", async (req, res) => {
     res.json({
       reply,
     });
+
   } catch (error) {
     console.error("GROQ ERROR:", error);
+
+    // Rate limit
+    if (error?.status === 429 || error?.code === "rate_limit_exceeded") {
+      return res.status(429).json({
+        error: "AI rate limit reached",
+        reply:
+          "⚠️ AI is temporarily busy due to API rate limits. Please try again shortly.",
+      });
+    }
+
+    // Authentication/API key error
+    if (error?.status === 401) {
+      return res.status(500).json({
+        error: "Invalid Groq API key",
+        reply:
+          "❌ AI configuration error. Please check the server API key.",
+      });
+    }
 
     res.status(500).json({
       error: "AI request failed",
@@ -124,11 +136,11 @@ app.post("/chat", async (req, res) => {
 });
 
 app.get("/", (req, res) => {
-  res.send("🚀 Anurag's AI Server is running.");
+  res.send("🚀 Anurag AI Server is running.");
 });
 
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Anurag's AI Server Running on Port ${PORT}`);
+  console.log(`🚀 Anurag AI Server Running on Port ${PORT}`);
 });
